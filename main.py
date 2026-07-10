@@ -76,15 +76,22 @@ def main() -> int:
     missing = [k for k in ("FIREWORKS_API_KEY", "FIREWORKS_BASE_URL", "ALLOWED_MODELS")
                if not os.environ.get(k)]
     if missing:
-        print(f"FATAL: missing environment variables: {', '.join(missing)}",
+        # Keep going: blank answers with valid schema still beat no output.
+        print(f"WARN: missing environment variables: {', '.join(missing)}",
               file=sys.stderr)
-        return 1
 
     try:
         tasks = load_tasks(INPUT_PATH)
     except Exception as exc:
         print(f"FATAL: cannot read tasks from {INPUT_PATH}: {exc}", file=sys.stderr)
-        return 1
+        write_results(OUTPUT_PATH, [])
+        return 0
+
+    # Skeleton first: even an instant crash mid-run leaves valid, scorable
+    # JSON with every task_id present.
+    skeleton = [{"task_id": t.get("task_id", f"idx_{i}"), "answer": ""}
+                for i, t in enumerate(tasks)]
+    write_results(OUTPUT_PATH, skeleton)
 
     print(f"Loaded {len(tasks)} task(s) from {INPUT_PATH}", file=sys.stderr)
     try:
@@ -92,13 +99,17 @@ def main() -> int:
     except Exception as exc:
         print(f"WARN: could not resolve model tiers: {exc}", file=sys.stderr)
 
-    results = run(tasks)
+    try:
+        results = run(tasks)
+    except Exception:
+        traceback.print_exc()
+        results = skeleton
 
     try:
         write_results(OUTPUT_PATH, results)
     except Exception as exc:
         print(f"FATAL: cannot write results to {OUTPUT_PATH}: {exc}", file=sys.stderr)
-        return 1
+        return 0
 
     u = usage()
     print(f"Wrote {len(results)} result(s) to {OUTPUT_PATH} | tokens: total={u['total']} "

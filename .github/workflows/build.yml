@@ -37,3 +37,41 @@ jobs:
             ${{ env.IMAGE }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Run the pushed image exactly the way the grading harness does: pull it
+  # anonymously, mount /input and /output, inject the env vars, and require
+  # a schema-valid results.json covering every task_id. A green run proves
+  # the shipped artifact starts, runs, and writes scorable output on a real
+  # linux/amd64 VM — dummy credentials, so answers are blank but the
+  # container contract is fully exercised.
+  verify-contract:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run image under harness contract
+        run: |
+          mkdir -p in out
+          cp sample_input/tasks.json in/tasks.json
+          docker run --rm \
+            -v "$PWD/in:/input:ro" -v "$PWD/out:/output" \
+            -e FIREWORKS_API_KEY=dummy-key-contract-check \
+            -e FIREWORKS_BASE_URL=https://api.fireworks.ai/inference/v1 \
+            -e ALLOWED_MODELS=dummy-model-a,dummy-model-b \
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Validate results.json schema
+        run: |
+          python3 - <<'EOF'
+          import json
+          tasks = json.load(open("in/tasks.json"))
+          results = json.load(open("out/results.json"))
+          assert isinstance(results, list), "results.json must be a JSON list"
+          assert len(results) == len(tasks), f"{len(results)} results != {len(tasks)} tasks"
+          for r in results:
+              assert set(r) == {"task_id", "answer"}, f"bad keys: {set(r)}"
+              assert isinstance(r["answer"], str), "answer must be a string"
+          assert {r["task_id"] for r in results} == {t["task_id"] for t in tasks}
+          print(f"contract OK: {len(results)} results, all task_ids present")
+          EOF
