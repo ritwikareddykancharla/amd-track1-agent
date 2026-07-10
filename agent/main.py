@@ -28,6 +28,12 @@ OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/output/results.json")
 BUDGET_SECONDS = float(os.environ.get("RUNTIME_BUDGET_SECONDS", "530"))
 LOCAL_RESERVE_SECONDS = 45.0  # bail out of local inference this early
 
+# Accuracy-gate diagnostic: send every task to Fireworks, bypassing the
+# deterministic and local tiers. The cheap tiers scored 21% on the hidden set
+# (unvalidated local answers shipped wrong); this isolates the API path, which
+# is the only tier we have verified end to end. Flip to "0" to restore tiering.
+FIREWORKS_ONLY = os.environ.get("FIREWORKS_ONLY", "1") == "1"
+
 _START = time.monotonic()
 
 
@@ -58,14 +64,18 @@ def run() -> None:
     # Tier 1 — deterministic (free, instant).
     pending = []
     for task_id, prompt, category in classified:
-        answer = try_deterministic(category, prompt)
+        answer = None if FIREWORKS_ONLY else try_deterministic(category, prompt)
         if answer is not None:
             answers[task_id] = answer
             _log(f"task {task_id}: solved deterministically")
         else:
             pending.append((task_id, prompt, category))
 
-    local_queue = [t for t in pending if local.available and t[2] in LOCAL_CATEGORIES]
+    local_queue = [
+        t
+        for t in pending
+        if not FIREWORKS_ONLY and local.available and t[2] in LOCAL_CATEGORIES
+    ]
     remote_queue = [t for t in pending if t not in local_queue]
 
     # Tier 3 first — network-bound, so it overlaps with local CPU work below.
