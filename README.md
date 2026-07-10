@@ -20,8 +20,9 @@ Key properties:
   file is written and the process exits 0 inside the 10-minute harness limit,
   even if the network hangs. Fireworks calls run in parallel threads while
   local CPU inference proceeds sequentially.
-- **Hidden reasoning tokens are disabled** (`reasoning_effort: "none"`, with a
-  graceful retry for models that reject the parameter) and `<think>` blocks are
+- **Hidden reasoning tokens are disabled** (`"thinking": {"type": "disabled"}`,
+  stepping down to `reasoning_effort: "low"` and then plain requests for models
+  that reject it — learned per model at runtime) and `<think>` blocks are
   stripped defensively.
 
 ## Container contract

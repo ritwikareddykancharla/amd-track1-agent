@@ -32,6 +32,9 @@ _PRICE_RANK = [
     ("llama", 6),
     ("glm", 7),
     ("deepseek", 8),
+    # gpt-oss can't fully disable reasoning on Fireworks -> spends more tokens
+    # per answer than "bigger" models with thinking disabled. Rank it last.
+    ("gpt-oss", 10),
     ("kimi", 9),
 ]
 _CODE_HINT = re.compile(r"code|coder", re.I)
@@ -87,7 +90,11 @@ class FireworksClient:
         allowed = os.environ.get("ALLOWED_MODELS", "")
         self.allowed = [m.strip() for m in re.split(r"[,\n;]+", allowed) if m.strip()]
         self.tokens_spent = 0
-        self._no_reasoning_param = True  # optimistic; drop on 400
+        # Per-model reasoning-suppression mode, learned from 400s at runtime:
+        # "thinking" -> {"thinking": {"type": "disabled"}}  (GLM/Kimi/DeepSeek)
+        # "effort"   -> {"reasoning_effort": "low"}          (gpt-oss family)
+        # "plain"    -> no suppression parameter accepted
+        self._mode_by_model: dict[str, str] = {}
 
     @property
     def available(self) -> bool:
@@ -124,34 +131,52 @@ class FireworksClient:
             "max_tokens": _MAX_TOKENS.get(category, 96),
             "temperature": 0.0,
         }
-        if self._no_reasoning_param:
-            # Hidden reasoning tokens are billed by default on several hosted
-            # models; this is the documented switch to turn them off.
-            payload["reasoning_effort"] = "none"
 
-        for attempt in (1, 2):
+        mode = self._mode_by_model.get(model, "thinking")
+        for attempt in range(4):
+            payload.pop("thinking", None)
+            payload.pop("reasoning_effort", None)
+            if mode == "thinking":
+                # Hidden reasoning is billed by default on most hosted models;
+                # this is the switch that turns it off (GLM/Kimi/DeepSeek).
+                payload["thinking"] = {"type": "disabled"}
+            elif mode == "effort":
+                payload["reasoning_effort"] = "low"  # gpt-oss family
             try:
                 data = self._post("/chat/completions", payload, timeout)
-                usage = data.get("usage", {})
-                self.tokens_spent += int(usage.get("total_tokens", 0))
-                text = data["choices"][0]["message"]["content"] or ""
-                text = _THINK_BLOCK.sub("", text).strip()
-                return text or None
             except urllib.error.HTTPError as err:
-                if err.code == 400 and "reasoning_effort" in payload:
-                    # Model rejects the switch — retry once without it.
-                    self._no_reasoning_param = False
-                    payload.pop("reasoning_effort", None)
+                body = ""
+                try:
+                    body = err.read().decode("utf-8", "replace")
+                except Exception:
+                    pass
+                if err.code == 400 and mode != "plain":
+                    # Model rejects the suppression param — step down the ladder
+                    # and remember what this model accepts.
+                    mode = "effort" if mode == "thinking" else "plain"
+                    self._mode_by_model[model] = mode
                     continue
-                if err.code in (429, 500, 502, 503) and attempt == 1:
+                if err.code in (408, 429, 500, 502, 503) and attempt < 3:
                     time.sleep(1.5)
                     continue
                 return None
             except Exception:
-                if attempt == 1:
+                if attempt < 3:
                     time.sleep(1.0)
                     continue
                 return None
+
+            self._mode_by_model[model] = mode
+            usage = data.get("usage") or {}
+            self.tokens_spent += int(usage.get("total_tokens", 0))
+            message = (data.get("choices") or [{}])[0].get("message") or {}
+            text = message.get("content") or ""
+            if not text:
+                # Reasoning model spent the whole budget thinking; salvage the
+                # tail of the reasoning rather than answering nothing.
+                text = (message.get("reasoning_content") or "")[-300:]
+            text = _THINK_BLOCK.sub("", text).strip()
+            return text or None
         return None
 
     def _post(self, path: str, payload: dict, timeout: float) -> dict:
@@ -161,6 +186,9 @@ class FireworksClient:
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
+                # Cloudflare in front of the API 403s (error 1010) the default
+                # Python-urllib User-Agent; any real UA string passes.
+                "User-Agent": "amd-track1-agent/1.0",
             },
             method="POST",
         )
