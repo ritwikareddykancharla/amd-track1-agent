@@ -1,39 +1,49 @@
-# Hybrid Token-Efficient Routing Agent — AMD Developer Hackathon ACT II, Track 1
+# 🧭 Token-Miser Router Agent
 
-A containerized agent that answers the 8 benchmark task categories while
-spending as few Fireworks tokens as possible. Every task goes down a
-cheapest-tier-first ladder:
+**AMD Developer Hackathon ACT II — Track 1** · [![build](https://github.com/ritwikareddykancharla/amd-track1-agent/actions/workflows/build.yml/badge.svg)](https://github.com/ritwikareddykancharla/amd-track1-agent/actions)
 
-| Tier | Engine | Fireworks tokens | Handles |
-|------|--------|------------------|---------|
-| 1 | Deterministic Python (AST-evaluated arithmetic, percentage patterns) | **0** | provable math |
-| 2 | Local **Gemma-2-2B-it** (Q4_K_M GGUF via llama.cpp, bundled in the image, CPU-only) | **0** | sentiment, NER, summarization, factual, word-problem math |
-| 3 | Fireworks API (cheapest capable model from `ALLOWED_MODELS`, reasoning disabled, hard `max_tokens` caps) | counted | code generation, code debugging, logic, escalations |
+An agent that answers all 8 benchmark task categories while spending as close to
+**zero Fireworks tokens** as possible. Every task walks down a
+cheapest-tier-first ladder — and only pays for what it truly can't get for free.
 
-Key properties:
+```
+📥 /input/tasks.json ──▶ 🔍 classify ──▶ 🪜 route down the ladder ──▶ 📤 /output/results.json
+```
 
-- **Zero-token classification** — task routing is regex/heuristic, no model call.
-- **A wrong free answer escalates instead of shipping**: tier-1/2 outputs are
-  validated (e.g. sentiment must literally be one of the three labels) and
-  anything suspicious is retried on Fireworks.
-- **Deadline-aware**: a global budget (default 530s) guarantees the results
-  file is written and the process exits 0 inside the 10-minute harness limit,
-  even if the network hangs. Fireworks calls run in parallel threads while
-  local CPU inference proceeds sequentially.
-- **Hidden reasoning tokens are disabled** (`"thinking": {"type": "disabled"}`,
-  stepping down to `reasoning_effort: "low"` and then plain requests for models
-  that reject it — learned per model at runtime) and `<think>` blocks are
-  stripped defensively.
+## 🪜 The three-tier ladder
 
-## Container contract
+| Tier | Engine | 💸 Fireworks tokens | Handles |
+|------|--------|---------------------|---------|
+| 1️⃣ | **Deterministic Python** — AST-evaluated arithmetic, percentage patterns | **0** | provable math |
+| 2️⃣ | **Local Gemma-2-2B-it** — Q4_K_M GGUF via llama.cpp, baked into the image, CPU-only | **0** | sentiment, NER, summarization, factual, word-problem math |
+| 3️⃣ | **Fireworks API** — cheapest capable model from `ALLOWED_MODELS`, reasoning off, hard `max_tokens` caps | counted 💰 | code generation, code debugging, logic, escalations |
 
-- Reads `/input/tasks.json` — `[{ "task_id": ..., "prompt": ... }]`
-- Writes `/output/results.json` — `[{ "task_id": ..., "answer": ... }]`
-- Exits `0` always.
-- Reads `FIREWORKS_API_KEY`, `FIREWORKS_BASE_URL`, `ALLOWED_MODELS` from the
-  environment at runtime. Nothing is hardcoded or bundled.
+## ✨ Why it spends so little
 
-## Run it (the same way the harness does)
+- 🆓 **Zero-token classification** — routing is pure regex/heuristics, no model call ever.
+- 🧠 **Hidden reasoning tokens are billed — so we switch them off.** Each model
+  gets a suppression ladder learned at runtime:
+  `"thinking": {"type": "disabled"}` → `reasoning_effort: "low"` → plain.
+  Leftover `<think>` blocks are stripped defensively.
+- ✅ **A wrong free answer escalates instead of shipping** — tier-1/2 outputs are
+  validated (sentiment must literally be one of the three labels, math must
+  parse as a number, …) and anything suspicious retries on Fireworks.
+- 🎯 **Terse by contract** — per-category system prompts ("Reply with only the
+  final numeric answer.") plus hard `max_tokens` caps (math: 16, sentiment: 4).
+- ⏱️ **Deadline-aware** — a global budget (530s) guarantees the results file is
+  written and the process exits 0 inside the 10-minute harness limit, even if
+  the network hangs. Fireworks calls run in parallel threads while local CPU
+  inference proceeds sequentially, so the clock is never wasted.
+
+## 📦 Container contract
+
+- 📥 Reads `/input/tasks.json` — `[{ "task_id": ..., "prompt": ... }]`
+- 📤 Writes `/output/results.json` — `[{ "task_id": ..., "answer": ... }]`
+- 🟢 Exits `0` always — every task_id gets an entry, no matter what fails.
+- 🔑 Reads `FIREWORKS_API_KEY`, `FIREWORKS_BASE_URL`, `ALLOWED_MODELS` from the
+  environment at runtime. **Nothing is hardcoded or bundled.**
+
+## 🚀 Run it (the same way the harness does)
 
 ```bash
 docker pull ghcr.io/ritwikareddykancharla/amd-track1-agent:latest
@@ -49,19 +59,18 @@ docker run --rm \
 cat out/results.json
 ```
 
-## Build
+## 🛠️ Build
 
-The image is built for `linux/amd64` by GitHub Actions on every push to
-`main` (see `.github/workflows/build.yml`) and published to GHCR. To build
-manually:
+The `linux/amd64` image is built by GitHub Actions on every push to `main`
+(see `.github/workflows/build.yml`) and published to GHCR. To build manually:
 
 ```bash
 docker buildx build --platform linux/amd64 -t amd-track1-agent .
 ```
 
-## Develop without Docker
+## 🧪 Develop without Docker
 
-The agent runs directly with Python 3.11+ (no local GGUF needed — tier 2 is
+The agent runs directly on Python 3.11+ — no local GGUF needed (tier 2 is
 skipped and those tasks escalate to Fireworks):
 
 ```bash
@@ -70,15 +79,15 @@ FIREWORKS_API_KEY=... ALLOWED_MODELS=... \
 python -m agent.main
 ```
 
-## Layout
+## 🗂️ Layout
 
 ```
 agent/
-  main.py              orchestrator: tiers, deadline, results contract
-  classifier.py        zero-token regex classifier (8 categories)
-  solvers.py           deterministic math solvers (tier 1)
-  local_model.py       llama.cpp Gemma-2-2B wrapper (tier 2)
-  fireworks_client.py  model picker + terse capped API calls (tier 3)
-Dockerfile             python:3.11-slim + llama.cpp + bundled GGUF
-sample_input/          example tasks for a local smoke test
+  main.py              🧭 orchestrator: tiers, deadline, results contract
+  classifier.py        🔍 zero-token regex classifier (8 categories)
+  solvers.py           🧮 deterministic math solvers (tier 1)
+  local_model.py       🦙 llama.cpp Gemma-2-2B wrapper (tier 2)
+  fireworks_client.py  🎆 model picker + terse capped API calls (tier 3)
+Dockerfile             🐳 python:3.11-slim + llama.cpp + bundled GGUF
+sample_input/          🧪 example tasks for a local smoke test
 ```
