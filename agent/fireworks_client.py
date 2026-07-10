@@ -43,33 +43,55 @@ _THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 _INSTRUCTIONS = {
     "code_gen": (
-        "Write only the code requested. No explanation, no markdown fences "
+        "Write only the code requested — complete and correct, but nothing "
+        "beyond it. No explanation, no usage examples, no markdown fences "
         "unless asked."
     ),
     "code_debug": (
         "Identify and fix the bug. Reply with the corrected code only, plus at "
-        "most one short sentence naming the bug."
+        "most one short sentence naming the bug. No other commentary."
     ),
     "logic": (
         "Solve the problem. Think silently; reply with only the final answer "
-        "in one short sentence."
+        "in one short sentence. Be precise — no restating the problem, no "
+        "step-by-step working."
     ),
-    "math": "Reply with only the final numeric answer.",
-    "factual": "Answer directly in at most one short sentence.",
-    "sentiment": "Reply with exactly one word: positive, negative, or neutral.",
-    "ner": "Reply with a comma-separated list of the named entities only.",
-    "summarization": "Reply with a one-to-two sentence summary only.",
+    "math": (
+        "Reply with only the final numeric answer — no working, no units, "
+        "no explanation."
+    ),
+    "factual": (
+        "Answer with only the answer itself, in at most one short sentence. "
+        "No preamble, no context, no explanation."
+    ),
+    "sentiment": (
+        "Reply with exactly one word: positive, negative, or neutral. "
+        "Nothing else."
+    ),
+    "ner": (
+        "Reply with a comma-separated list of the named entities only. "
+        "No labels, no explanation."
+    ),
+    "summarization": (
+        "Reply with a one-to-two sentence summary only. No preamble like "
+        "'Here is a summary'."
+    ),
 }
 
+# Safety rails, not budgets: the prompt is what keeps answers terse, and a
+# well-behaved completion ends at EOS far below these. Set high enough that a
+# correct answer can never be truncated mid-sentence (a clipped answer reads
+# as wrong to the judge); they only bite when a model ignores the instruction
+# and rambles, where they bound the damage in billed tokens.
 _MAX_TOKENS = {
-    "code_gen": 512,
-    "code_debug": 512,
-    "logic": 96,
-    "math": 16,
-    "factual": 48,
-    "sentiment": 4,
-    "ner": 64,
-    "summarization": 96,
+    "code_gen": 1024,
+    "code_debug": 1024,
+    "logic": 256,
+    "math": 64,
+    "factual": 128,
+    "sentiment": 8,
+    "ner": 128,
+    "summarization": 192,
 }
 
 

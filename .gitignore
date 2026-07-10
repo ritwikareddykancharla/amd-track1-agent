@@ -4,3 +4,4 @@ out/
 *.gguf
 .env
 .env.*
+models/
