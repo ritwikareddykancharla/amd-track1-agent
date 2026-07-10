@@ -1,110 +1,119 @@
-# 🧭 Token-Miser Router Agent
+# Token-Miser Router Agent
 
-**AMD Developer Hackathon ACT II — Track 1** · [![build](https://github.com/ritwikareddykancharla/amd-track1-agent/actions/workflows/build.yml/badge.svg)](https://github.com/ritwikareddykancharla/amd-track1-agent/actions)
+A routing agent for **AMD Developer Hackathon ACT II — Track 1** that answers tasks across eight categories while spending as close to zero Fireworks API tokens as possible.
 
-## 💡 The idea
+[![build](https://github.com/ritwikareddykancharla/amd-track1-agent/actions/workflows/build.yml/badge.svg)](https://github.com/ritwikareddykancharla/amd-track1-agent/actions)
 
-Track 1 scores like this: first your answers must pass an accuracy gate, and
-**then submissions are ranked by who spent the fewest Fireworks API tokens**.
-That flips the usual objective — the winning move isn't a smarter model, it's
-*not calling the API at all* whenever a cheaper path can produce a correct
-answer.
+Image: `ghcr.io/ritwikareddykancharla/amd-track1-agent:latest` (public, linux/amd64, ~1.77 GB — a local Gemma-2-2B model is baked in)
 
-So this agent treats the Fireworks API as a last resort. Every task walks down
-a ladder of increasingly expensive tiers, and stops at the first one that can
-answer **provably or verifiably** correctly:
+---
+
+## Why the agent is built this way
+
+Track 1 scoring has two stages:
+
+1. **Accuracy gate.** An LLM judge checks your answers. Fail the gate and nothing else matters.
+2. **Token ranking.** Everyone who passes is ranked by total tokens recorded by the judging proxy — *fewest wins*. Only traffic through `FIREWORKS_BASE_URL` is counted; local inference inside the container is free.
+
+This inverts the usual objective. The winning move is not a smarter model — it is **not calling the API at all** whenever a cheaper path can produce an answer that is provably or verifiably correct. Every design decision below follows from that one constraint, plus its counterweight: a wrong answer risks the accuracy gate that all the token-saving depends on, so cheaper tiers are only allowed to answer when their output can be validated.
+
+## Architecture
+
+Each task is classified for free, then walks down a ladder of increasingly expensive tiers. The first tier that can answer *and pass validation* wins; everything else escalates.
 
 ```
-📥 /input/tasks.json
-   │
-   ▼
-🔍 classify (regex, 0 tokens)
-   │
-   ├─ 1️⃣ deterministic Python ── provable math ───────────── 0 tokens 🆓
-   ├─ 2️⃣ local Gemma-2-2B ────── sentiment/NER/summary/... ── 0 tokens 🆓
-   └─ 3️⃣ Fireworks API ───────── code, logic, escalations ─── counted 💰
-   │
-   ▼
-📤 /output/results.json
+/input/tasks.json
+       │
+       ▼
+ regex classifier ................................. 0 tokens
+       │
+       ├─ Tier 1  deterministic Python solvers ..... 0 tokens
+       ├─ Tier 2  local Gemma-2-2B (in-container) .. 0 tokens
+       └─ Tier 3  Fireworks API .................... counted
+       │
+       ▼
+/output/results.json
 ```
 
-## 🚶 Follow one task through the pipeline
+| Stage | File | Handles | Cost |
+|---|---|---|---|
+| Classifier | `agent/classifier.py` | routes all 8 categories | 0 tokens |
+| Tier 1 | `agent/solvers.py` | arithmetic, percentages | 0 tokens |
+| Tier 2 | `agent/local_model.py` | sentiment, NER, summarization, factual | 0 tokens |
+| Tier 3 | `agent/fireworks_client.py` | code gen, code debug, logic, escalations | counted |
+| Orchestrator | `agent/main.py` | deadline budget, parallelism, output contract | — |
 
-Take `"What is 15% of 240?"`:
+### Classification (0 tokens)
 
-1. **🔍 Classify (0 tokens).** A regex classifier (`agent/classifier.py`) tags
-   it as `math` — it matches the `\d\s*%\s*of\s+\d` pattern. No model is ever
-   asked "what kind of task is this"; that would cost tokens on every single
-   task, which defeats the purpose.
-2. **1️⃣ Try to solve it deterministically (0 tokens).** `agent/solvers.py`
-   recognises the percentage pattern and computes `0.15 × 240 = 36` with plain
-   Python. General arithmetic like `17 * 23 + 4` is parsed into a Python AST
-   and evaluated with a whitelist of safe operators — real math, not `eval()`,
-   and it cannot hallucinate. Answer found → done, **0 tokens spent**.
-3. **2️⃣ If tier 1 can't prove it** (say, a word problem), the prompt goes to a
-   **local Gemma-2-2B** model that ships *inside* the Docker image and runs on
-   the 2 CPUs of the grading VM. Local inference doesn't touch the Fireworks
-   API, so it's free by the scoring rules. Its output is **validated before
-   shipping**: a sentiment answer must literally be `positive`, `negative`, or
-   `neutral`; a math answer must parse as a number. Fail validation → the task
-   *escalates* instead of submitting a guess, because one wrong answer risks
-   the accuracy gate that all the token-saving depends on.
-4. **3️⃣ Only what's left hits Fireworks** — code generation, code debugging,
-   multi-step logic, and any tier-2 escapees. Even then, every trick below is
-   applied to keep the counted tokens tiny.
+`agent/classifier.py` tags each prompt with one of the eight graded categories (facts, math, sentiment, summarization, NER, code debugging, logic, code generation) using regex heuristics — code-fence and keyword detection, arithmetic patterns, syllogism markers, and so on. Asking a model "what kind of task is this?" would cost tokens on *every* task, which defeats the whole design; regexes cost nothing and are wrong rarely enough that the fallback (`factual`, the cheapest category to answer) is safe.
 
-## ✂️ How tier 3 spends as little as possible
+### Tier 1 — deterministic solvers (0 tokens)
 
-- **🧠 Reasoning tokens are billed even though you never see them.** Hosted
-  "thinking" models burn hidden chain-of-thought tokens before answering —
-  asking GLM the capital of France cost ~30 tokens of invisible reasoning for
-  a 3-token answer. The client sends `"thinking": {"type": "disabled"}` to
-  turn that off. Models that reject the parameter get a graceful ladder,
-  learned per model at runtime from 400 responses:
-  `thinking: disabled` → `reasoning_effort: "low"` → plain request.
-- **📉 Cheapest-capable model routing.** `ALLOWED_MODELS` is injected by the
-  harness, so the client ranks whatever it's given by a price heuristic and
-  picks the cheapest model that fits the category — small models for facts and
-  sentiment, a strong model only for code. (gpt-oss is specifically avoided
-  for code: it can't fully disable reasoning, and measured 290 tokens vs 101
-  for a thinking-disabled peer on the same bug-fix task.)
-- **🎯 Terse by contract.** Each category gets a one-line system prompt like
-  *"Reply with only the final numeric answer."* plus a hard `max_tokens` cap —
-  sentiment is capped at **4 tokens**, math at 16, code at 512. The model
-  physically cannot ramble.
-- **🧹 Defensive stripping.** If a model emits `<think>…</think>` anyway, it's
-  stripped before the answer is written.
+`agent/solvers.py` answers math it can *prove*. Expressions like `17 * 23 + 4` are parsed into a Python AST and evaluated with a whitelist of safe operators — real evaluation, not `eval()`, and structurally incapable of hallucinating. Percentage phrasings ("What is 15% of 240?") are recognized and computed directly. If the prompt doesn't parse cleanly, the solver declines and the task escalates — it never guesses.
 
-## 🛡️ Why it can't blow the harness rules
+### Tier 2 — local Gemma-2-2B (0 tokens)
 
-The grading harness gives 10 minutes, then kills the container. Producing *no*
-results file is worse than producing partial answers, so `agent/main.py` is
-built around a **530-second global budget**:
+A quantized Gemma-2-2B (Q4_K_M GGUF) ships **inside the Docker image** and runs on the grading VM's 2 vCPUs via `llama-cpp-python`. Because it never touches `FIREWORKS_BASE_URL`, its inference is free under the scoring rules. It handles the fuzzy-but-easy categories: sentiment, NER, summarization, and factual lookups.
 
-- Fireworks calls run in a thread pool *while* the local model chews through
-  its queue on the CPU — network wait and CPU inference overlap instead of
-  queueing.
-- When the budget runs out, whatever answers exist are written; every
-  `task_id` always gets an entry (blank if truly unanswered).
-- The process **exits 0 no matter what fails** — a crash in any tier is
-  caught, logged, and routed around.
+The critical detail is **output validation before shipping** (`agent/local_model.py`): a sentiment answer must literally be `positive`, `negative`, or `neutral`; a math answer must parse as a number. Anything that fails validation escalates to Tier 3 instead of being submitted — a 2B model is allowed to save tokens, never to gamble the accuracy gate. The model is lazy-loaded, so runs whose tasks are all deterministic pay no startup cost, and dev machines without the GGUF simply fall through to Tier 3.
 
-## 📊 Measured on the bundled sample (9 tasks, all 8 categories)
+### Tier 3 — Fireworks API (the only counted tokens)
 
-Run without the local model (worst case — everything fuzzy escalates to the
-API): **9/9 correct, 627 total Fireworks tokens, 5 seconds**. The two
-arithmetic tasks cost 0. In the real container the local Gemma tier absorbs
-sentiment/NER/summarization/factual too, so the counted spend drops further.
+What remains — code generation, code debugging, multi-step logic, and any tier-2 escalations — goes to Fireworks through `agent/fireworks_client.py`, which is built entirely around minimizing counted tokens:
 
-## 📦 Container contract
+**Reasoning suppression.** Hosted "thinking" models bill their hidden chain-of-thought: in testing, asking GLM the capital of France burned ~30 invisible reasoning tokens for a 3-token answer. The client sends `"thinking": {"type": "disabled"}` to switch that off. Models that reject the parameter get a fallback ladder, learned per model at runtime from HTTP 400 responses and cached for the rest of the run:
 
-- 📥 Reads `/input/tasks.json` — `[{ "task_id": ..., "prompt": ... }]`
-- 📤 Writes `/output/results.json` — `[{ "task_id": ..., "answer": ... }]`
-- 🟢 Exits `0` always — every task_id gets an entry, no matter what fails.
-- 🔑 Reads `FIREWORKS_API_KEY`, `FIREWORKS_BASE_URL`, `ALLOWED_MODELS` from the
-  environment at runtime. **Nothing is hardcoded or bundled.**
+```
+"thinking": {"type": "disabled"}   → GLM, Kimi, DeepSeek
+"reasoning_effort": "low"          → gpt-oss family
+plain request                      → everything else
+```
 
-## 🚀 Run it (the same way the harness does)
+**Cheapest-capable routing.** `ALLOWED_MODELS` is injected by the harness at grading time, so the client cannot hardcode model names. Instead it ranks whatever list it receives with a price heuristic (name-fragment table: Gemma cheapest → Llama → Qwen → … → Kimi/gpt-oss most expensive, unknown names rank mid-table) and picks the cheapest model that fits the category — small models for facts and sentiment, one step up for logic, the strongest model only for code. gpt-oss is explicitly avoided for code tasks: it cannot fully disable reasoning, and it measured **290 tokens vs 101** for a thinking-disabled peer on the identical bug-fix task.
+
+**Terse by contract.** Every category gets a one-line system prompt ("Reply with only the final numeric answer.") and a hard `max_tokens` cap, so the model physically cannot ramble:
+
+| Category | max_tokens | Category | max_tokens |
+|---|---|---|---|
+| sentiment | 4 | ner | 64 |
+| math | 16 | logic | 96 |
+| factual | 48 | summarization | 96 |
+| | | code gen / debug | 512 |
+
+**Defensive handling.** `<think>…</think>` blocks are stripped if a model emits them anyway; if a reasoning model spends its whole budget thinking and returns empty content, the tail of the reasoning is salvaged rather than answering nothing. Transient errors (408/429/5xx) retry with backoff.
+
+## Staying inside the harness rules
+
+The grading harness gives the container 10 minutes on a 4 GB / 2 vCPU VM, then kills it. Producing *no* results file is worse than producing partial answers, so `agent/main.py` is built around a **530-second global budget**:
+
+- Fireworks calls (network-bound) run in a thread pool **while** the local model works through its queue on the CPU — the two overlap instead of queueing.
+- If the budget runs low, remaining local-tier tasks skip straight to the API; if it runs out entirely, whatever answers exist are written.
+- Every `task_id` always gets an entry in `results.json` (empty string if truly unanswered — a blank answer loses one task, a missing file can zero the run).
+- The process exits `0` unconditionally: any crash in any tier is caught, logged, and routed around.
+
+## Measured results
+
+On the bundled sample (`sample_input/tasks.json`, 9 tasks covering all 8 categories), run in the **worst case** — no local model, so every fuzzy task escalates to the API:
+
+| Metric | Result |
+|---|---|
+| Accuracy | 9 / 9 correct |
+| Fireworks tokens | 627 total |
+| Wall time | ~5 seconds |
+| Arithmetic tasks | 0 tokens (Tier 1) |
+
+In the real grading container the local Gemma tier additionally absorbs sentiment, NER, summarization, and factual tasks, so counted spend drops further.
+
+## Container contract
+
+- Reads `/input/tasks.json` — `[{ "task_id": ..., "prompt": ... }]`
+- Writes `/output/results.json` — `[{ "task_id": ..., "answer": ... }]`
+- Reads `FIREWORKS_API_KEY`, `FIREWORKS_BASE_URL`, `ALLOWED_MODELS` from the environment at runtime — nothing is hardcoded or bundled
+- Always exits `0`, always writes an entry for every `task_id`
+
+## Running it
+
+Exactly as the harness does:
 
 ```bash
 docker pull ghcr.io/ritwikareddykancharla/amd-track1-agent:latest
@@ -120,10 +129,9 @@ docker run --rm \
 cat out/results.json
 ```
 
-## 🧪 Develop without Docker
+### Development without Docker
 
-The agent runs directly on Python 3.11+. Without a local GGUF, tier 2 is
-skipped and those tasks escalate to Fireworks — same code path, just pricier:
+The agent runs directly on Python 3.11+ with no dependencies beyond the standard library (Tier 2 needs `llama-cpp-python` and a GGUF, but without them those tasks escalate to Fireworks — same code path, just pricier):
 
 ```bash
 INPUT_PATH=sample_input/tasks.json OUTPUT_PATH=out/results.json \
@@ -131,19 +139,20 @@ FIREWORKS_API_KEY=... ALLOWED_MODELS=... \
 python -m agent.main
 ```
 
-The `linux/amd64` image is rebuilt by GitHub Actions on every push to `main`
-(`.github/workflows/build.yml`) and published to GHCR — the ~1.7GB Gemma GGUF
-is baked in at build time, so the grading VM never downloads anything.
+### Build pipeline
 
-## 🗂️ Layout
+GitHub Actions (`.github/workflows/build.yml`) rebuilds the `linux/amd64` image on every push to `main` and publishes it to GHCR. The ~1.7 GB Gemma GGUF is downloaded at build time and baked into the image, so the grading VM never downloads anything at runtime.
+
+## Repository layout
 
 ```
 agent/
-  main.py              🧭 orchestrator: tiers, deadline budget, results contract
-  classifier.py        🔍 zero-token regex classifier (8 categories)
-  solvers.py           🧮 deterministic AST math solvers (tier 1)
-  local_model.py       🦙 llama.cpp Gemma-2-2B wrapper + output validation (tier 2)
-  fireworks_client.py  🎆 price-ranked model picker + terse capped API calls (tier 3)
-Dockerfile             🐳 python:3.11-slim + llama.cpp CPU wheel + bundled GGUF
-sample_input/          🧪 9 example tasks covering all 8 categories
+  main.py              orchestrator: tier routing, deadline budget, output contract
+  classifier.py        zero-token regex classifier (8 categories)
+  solvers.py           deterministic AST-based math solvers (Tier 1)
+  local_model.py       llama.cpp Gemma-2-2B wrapper + output validation (Tier 2)
+  fireworks_client.py  price-ranked model routing + reasoning suppression (Tier 3)
+Dockerfile             python:3.11-slim + llama-cpp-python CPU wheel + bundled GGUF
+sample_input/          9 example tasks covering all 8 categories
+.github/workflows/     CI: build and push the image to GHCR
 ```
