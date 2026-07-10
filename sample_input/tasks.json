@@ -1,0 +1,11 @@
+[
+  { "task_id": "t1", "prompt": "What is 17 * 23 + 4?" },
+  { "task_id": "t2", "prompt": "What is 15% of 240?" },
+  { "task_id": "t3", "prompt": "Classify the sentiment of this review: 'The battery died after two days and support never replied. Complete waste of money.'" },
+  { "task_id": "t4", "prompt": "Extract all named entities from this text: 'Sundar Pichai announced that Google will open a new office in Bangalore in March 2026.'" },
+  { "task_id": "t5", "prompt": "Summarize the following passage in one sentence: 'The transistor, invented at Bell Labs in 1947, replaced vacuum tubes in electronics. It enabled smaller, cheaper, and more reliable devices, ultimately making possible integrated circuits, microprocessors, and the entire modern computing industry.'" },
+  { "task_id": "t6", "prompt": "What is the capital of Australia?" },
+  { "task_id": "t7", "prompt": "Fix the bug in this Python function:\n```python\ndef average(nums):\n    total = 0\n    for n in nums:\n        total += n\n    return total / len(nums) + 1\n```" },
+  { "task_id": "t8", "prompt": "Write a Python function that returns the n-th Fibonacci number iteratively." },
+  { "task_id": "t9", "prompt": "If all bloops are razzies and all razzies are lazzies, are all bloops definitely lazzies? Answer yes or no with a one-sentence reason." }
+]

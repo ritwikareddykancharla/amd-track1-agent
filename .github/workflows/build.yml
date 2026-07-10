@@ -1,0 +1,39 @@
+name: build-and-push
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/amd-track1-agent
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # linux/amd64 is a hard hackathon requirement; building on the GitHub
+      # runner guarantees the manifest regardless of the dev machine's OS.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
