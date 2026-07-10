@@ -107,7 +107,12 @@ class FireworksClient:
             for model in self.allowed:
                 if _CODE_HINT.search(model):
                     return model
-            return candidates[-1] if candidates else ""  # strongest general model
+            # Strongest general model, but avoid gpt-oss when possible: it
+            # can't fully disable reasoning, so it costs ~3x the tokens of a
+            # thinking-disabled peer on the same code task.
+            pool = [m for m in candidates if "gpt-oss" not in m.lower()]
+            pool = pool or candidates
+            return pool[-1] if pool else ""
         # Non-code: cheapest capable; skip code-specialised models.
         general = [m for m in candidates if not _CODE_HINT.search(m)]
         pool = general or candidates
