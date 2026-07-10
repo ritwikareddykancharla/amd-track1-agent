@@ -12,17 +12,18 @@ RUN apt-get update \
 RUN pip install --no-cache-dir \
     --only-binary=llama-cpp-python \
     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
-    llama-cpp-python==0.3.19
+    llama-cpp-python==0.3.19 "openai>=1.30.0"
 
-# Bundled local model: gemma-2-2b-it Q4_K_M (~1.7GB). Local inference is the
-# zero-Fireworks-token tier; only API traffic counts toward the score.
-RUN mkdir -p /models && curl -fL --retry 3 -o /models/gemma-2-2b-it-Q4_K_M.gguf \
-    "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf"
+# Bundled local model: gemma-3-4b-it Q4_K_M (~2.5GB) — the fallback floor for
+# tasks the Fireworks API fails on. Local inference costs zero counted tokens;
+# only API traffic counts toward the score.
+RUN mkdir -p /models && curl -fL --retry 3 -o /models/gemma-3-4b-it-Q4_K_M.gguf \
+    "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf"
 
 WORKDIR /app
 COPY agent /app/agent
 
-ENV LOCAL_MODEL_PATH=/models/gemma-2-2b-it-Q4_K_M.gguf \
+ENV LOCAL_MODEL_PATH=/models/gemma-3-4b-it-Q4_K_M.gguf \
     LOCAL_MODEL_THREADS=2 \
     PYTHONUNBUFFERED=1
 

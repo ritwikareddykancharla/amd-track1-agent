@@ -1,14 +1,13 @@
 """Entry point: /input/tasks.json -> /output/results.json, exit 0. Always.
 
-Routing ladder per task (cheapest tier that can answer wins):
-  1. deterministic Python solver        — 0 tokens
-  2. local Gemma-2-2B in the container  — 0 tokens
-  3. Fireworks API                      — counted tokens, capped and terse
+Default (FIREWORKS_ONLY=1): every task goes to the Fireworks API — the tier
+with the strongest models and the only one verified end to end. The bundled
+local model (gemma-3-4b-it) is the fallback floor: any task the API fails on
+is answered locally rather than shipped empty, because an empty answer is a
+guaranteed zero at the accuracy gate.
 
-A global deadline keeps us inside the 10-minute harness limit: Fireworks calls
-run first (network-bound, parallel), local CPU inference fills the remainder,
-and if the clock runs low every unanswered task gets a best-effort escalation
-or a placeholder — the results file is always written and we always exit 0.
+A global deadline keeps us inside the 10-minute harness limit, the results
+file is always written with every task_id, and we always exit 0.
 """
 from __future__ import annotations
 
@@ -115,6 +114,26 @@ def run() -> None:
         # Out of time waiting on the API — ship whatever we have.
         _log("deadline hit while waiting on Fireworks; writing partial results")
     pool.shutdown(wait=False, cancel_futures=True)
+
+    # Fallback floor — an empty answer is a guaranteed zero, so any task the
+    # API could not answer goes to the local model regardless of category
+    # (strict=False: an imperfect local answer still beats an empty one).
+    unanswered = [t for t in classified if t[0] not in answers]
+    if unanswered:
+        _log(
+            f"{len(unanswered)} task(s) unanswered by Fireworks; "
+            f"local fallback available={local.available}"
+        )
+    for task_id, prompt, category in unanswered:
+        if _remaining() < 30.0:
+            _log("deadline pressure; stopping local fallback")
+            break
+        answer = local.answer(category, prompt, strict=False)
+        if answer:
+            answers[task_id] = answer
+            _log(f"task {task_id}: answered by local fallback (0 tokens)")
+        else:
+            _log(f"task {task_id}: local fallback failed too")
 
     # Never omit a task_id — an empty answer scores 0 for that task, but a
     # malformed/missing results file can zero the whole run.
