@@ -39,11 +39,11 @@ jobs:
           cache-to: type=gha,mode=max
 
   # Run the pushed image exactly the way the grading harness does: pull it
-  # anonymously, mount /input and /output, inject the env vars, and require
-  # a schema-valid results.json covering every task_id. A green run proves
-  # the shipped artifact starts, runs, and writes scorable output on a real
-  # linux/amd64 VM — dummy credentials, so answers are blank but the
-  # container contract is fully exercised.
+  # anonymously, mount /input and /output, inject the env vars, and cap the
+  # container at the grading VM's 4GB / 2 vCPU. Credentials are dummies, so
+  # any non-blank answer can only come from a free tier — which turns this
+  # into a real end-to-end test of the solver AND local llama.cpp inference
+  # (t1/t2 math solver, t3/t4/t5 local model), not just the output schema.
   verify-contract:
     needs: build
     runs-on: ubuntu-latest
@@ -54,14 +54,16 @@ jobs:
         run: |
           mkdir -p in out
           cp sample_input/tasks.json in/tasks.json
-          docker run --rm \
+          docker run --rm --memory 4g --cpus 2 \
             -v "$PWD/in:/input:ro" -v "$PWD/out:/output" \
             -e FIREWORKS_API_KEY=dummy-key-contract-check \
             -e FIREWORKS_BASE_URL=https://api.fireworks.ai/inference/v1 \
             -e ALLOWED_MODELS=dummy-model-a,dummy-model-b \
             ${{ env.IMAGE }}:${{ github.sha }}
+          echo "--- results.json ---"
+          cat out/results.json
 
-      - name: Validate results.json schema
+      - name: Validate schema and free-tier answers
         run: |
           python3 - <<'EOF'
           import json
@@ -73,5 +75,12 @@ jobs:
               assert set(r) == {"task_id", "answer"}, f"bad keys: {set(r)}"
               assert isinstance(r["answer"], str), "answer must be a string"
           assert {r["task_id"] for r in results} == {t["task_id"] for t in tasks}
-          print(f"contract OK: {len(results)} results, all task_ids present")
+          answers = {r["task_id"]: r["answer"] for r in results}
+          # Dummy API creds: these can only be answered by the zero-token
+          # tiers, so a blank means that tier is broken inside the image.
+          for tid, tier in [("t1", "math solver"), ("t2", "math solver"),
+                            ("t3", "local model"), ("t4", "local model"),
+                            ("t5", "local model")]:
+              assert answers[tid].strip(), f"{tid}: {tier} produced no answer"
+          print(f"contract OK: {len(results)} results, free tiers answered t1-t5")
           EOF

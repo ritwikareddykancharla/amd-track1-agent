@@ -5,8 +5,11 @@
 # build (which fails on the slim image without a toolchain).
 FROM python:3.11-slim
 
+# libgomp1: the prebuilt llama-cpp-python CPU wheel links libgomp.so.1
+# (OpenMP), which slim images do not ship — without it the import fails and
+# the local tier silently dies (every task escalates to the paid API).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \

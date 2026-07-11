@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import threading
 import time
+import traceback
 
 MODEL_PATH = os.environ.get("LOCAL_MODEL_PATH", "/models/gemma-3-4b-it-Q4_K_M.gguf")
 # Kill switch: LOCAL_TIER=0 routes everything to the API (v5 behaviour).
@@ -84,20 +86,26 @@ class LocalModel:
 
     def _load(self):
         if self._llm is None:
-            from llama_cpp import Llama
-
+            # The import lives inside the guarded block: a broken native
+            # runtime (e.g. a missing shared library) must latch _failed and
+            # be visible in the container log, not retried silently per task.
             try:
+                from llama_cpp import Llama
+
                 self._llm = Llama(
                     model_path=MODEL_PATH,
-                    # 4096 fits model weights (~2.5GB) + KV cache inside the
-                    # 4GB grading VM and covers long summarization passages.
-                    n_ctx=4096,
+                    # 2048 keeps weights (~2.5GB) + KV cache well inside the
+                    # 4GB grading VM; an oversized prompt raises and safely
+                    # escalates that one task to the API.
+                    n_ctx=2048,
                     n_threads=int(os.environ.get("LOCAL_MODEL_THREADS", "2")),
                     verbose=False,
                 )
             except Exception:
                 # Broken runtime/weights — permanent; per-call errors are not.
                 self._failed = True
+                print("local tier disabled: model load failed", file=sys.stderr)
+                traceback.print_exc()
                 raise
         return self._llm
 
