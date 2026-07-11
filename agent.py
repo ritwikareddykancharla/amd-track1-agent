@@ -1,8 +1,11 @@
-"""Per-category answer strategy: classify, then one tuned Fireworks call.
+"""Per-category answer strategy: classify, answer free if possible, else API.
 
-Each category carries a terse system prompt, a token cap, and a model tier.
-Prompts are deliberately short — input tokens count toward the score — and
-push the model to answer directly without preamble.
+Classification is Gemma-first (a validated local one-word call, 0 scored
+tokens) with the regex classifier as fallback. Every category except logic
+is then attempted locally; only declined or validation-failed tasks pay for
+a Fireworks call. Each API category carries a terse system prompt, a token
+cap, and a model tier — prompts are deliberately short because input tokens
+count toward the score.
 """
 
 from __future__ import annotations
@@ -67,22 +70,37 @@ _CONFIG: dict[Category, tuple[str, int, str]] = {
 }
 
 
+def _classify(prompt: str) -> Category:
+    """Gemma classifies when available — a validated one-word local answer,
+    0 leaderboard tokens, and far more robust to keyword collisions than the
+    regex pass. The regex classifier is the fallback, not a second opinion."""
+    word = _LOCAL.classify(prompt)
+    if word is not None:
+        try:
+            return Category(word)
+        except ValueError:
+            pass
+    return classify(prompt)
+
+
 def solve(prompt: str) -> str:
-    category = classify(prompt)
+    category = _classify(prompt)
 
     # Free tier: provable arithmetic never touches the API. solve_math()
     # declines (returns None) on anything it cannot fully parse, so a wrong
-    # zero-token answer is structurally impossible — word problems and
-    # unparseable phrasings fall through to the API path below.
-    if category is Category.MATH:
+    # zero-token answer is structurally impossible. Consulting the regex
+    # classifier too means a Gemma misroute can never cost an arithmetic
+    # task its exact deterministic answer.
+    if category is Category.MATH or classify(prompt) is Category.MATH:
         exact = solve_math(prompt)
         if exact is not None:
             return f"Answer: {exact}"
 
-    # Free tier 2: local Gemma for categories whose output is validated
-    # before shipping (sentiment label check, NER source-text check, summary
-    # reduction check). A failed validation returns None and the task pays
-    # for an API call instead — never a gamble on the accuracy gate.
+    # Free tier 2: local Gemma for every category but logic. Sentiment/NER/
+    # summarization ship only if their validators pass, code ships only if
+    # it executes cleanly, factual and math word problems ship unvalidated
+    # (no local oracle exists; the token ranking rewards the gamble). Any
+    # decline returns None and the task pays for an API call instead.
     if category.value in LOCAL_CATEGORIES:
         local = _LOCAL.answer(category.value, prompt)
         if local is not None:

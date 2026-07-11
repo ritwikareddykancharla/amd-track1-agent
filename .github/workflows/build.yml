@@ -43,7 +43,8 @@ jobs:
   # container at the grading VM's 4GB / 2 vCPU. Credentials are dummies, so
   # any non-blank answer can only come from a free tier — which turns this
   # into a real end-to-end test of the solver AND local llama.cpp inference
-  # (t1/t2 math solver, t3/t4/t5 local model), not just the output schema.
+  # (t1/t2 math solver, t3-t8 local model incl. executed code), not just
+  # the output schema. Only t9 (logic, always-API) may be blank here.
   verify-contract:
     needs: build
     runs-on: ubuntu-latest
@@ -78,9 +79,11 @@ jobs:
           answers = {r["task_id"]: r["answer"] for r in results}
           # Dummy API creds: these can only be answered by the zero-token
           # tiers, so a blank means that tier is broken inside the image.
+          # t9 (logic) is always-API by design and is allowed to be blank.
           for tid, tier in [("t1", "math solver"), ("t2", "math solver"),
-                            ("t3", "local model"), ("t4", "local model"),
-                            ("t5", "local model")]:
+                            ("t3", "local sentiment"), ("t4", "local ner"),
+                            ("t5", "local summary"), ("t6", "local factual"),
+                            ("t7", "local code+exec"), ("t8", "local code+exec")]:
               assert answers[tid].strip(), f"{tid}: {tier} produced no answer"
-          print(f"contract OK: {len(results)} results, free tiers answered t1-t5")
+          print(f"contract OK: {len(results)} results, free tiers answered t1-t8")
           EOF
