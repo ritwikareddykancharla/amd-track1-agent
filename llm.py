@@ -13,7 +13,7 @@ import re
 import threading
 from functools import lru_cache
 
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -130,10 +130,12 @@ def describe_tiers() -> str:
 
 _LOCK = threading.Lock()
 _USAGE = {"prompt": 0, "completion": 0, "total": 0, "calls": 0}
-# Models that rejected reasoning_effort; stop sending it to them.
+# Models that rejected a request carrying reasoning_effort; they get plain
+# OpenAI-compatible calls from then on.
 _NO_EFFORT: set[str] = set()
-# Thinking tokens are scored; 'none' suppresses hidden reasoning that would
-# otherwise drain the budget and sometimes return blank content.
+# 'none' suppresses hidden thinking: measured to roughly halve tokens and
+# stop reasoning models burning their answer cap on visible step-by-step
+# preambles. Best-effort only — any request error retries as a plain call.
 _EFFORT = os.environ.get("REASONING_EFFORT", "none")
 
 _THINK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
@@ -164,14 +166,18 @@ def _chat(model: str, messages: list[dict], max_tokens: int) -> str:
             temperature=0, **kwargs,
         )
     except Exception as exc:
-        if kwargs and "reasoning_effort" in str(exc):
-            _NO_EFFORT.add(model)
-            resp = _client().chat.completions.create(
-                model=model, messages=messages, max_tokens=max_tokens,
-                temperature=0,
-            )
-        else:
+        if not kwargs:
             raise
+        # Whatever went wrong, a plain standard-fields call is the shape
+        # every OpenAI-compatible endpoint must accept — retry with that.
+        # Only a request rejection means the endpoint dislikes the extra
+        # field; transient failures (429/5xx/timeouts) keep suppression on.
+        if isinstance(exc, APIStatusError) and exc.status_code in (400, 404, 422):
+            _NO_EFFORT.add(model)
+        resp = _client().chat.completions.create(
+            model=model, messages=messages, max_tokens=max_tokens,
+            temperature=0,
+        )
     _record(getattr(resp, "usage", None))
     return _THINK.sub("", resp.choices[0].message.content or "").strip()
 

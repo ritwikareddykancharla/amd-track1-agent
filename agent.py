@@ -12,52 +12,53 @@ from llm import complete, model_for
 
 CHEAP, STRONG, CODE = "cheap", "strong", "code"
 
-# Proven config: the strong tier is a reasoning model run with
-# reasoning_effort=none, so it can only reason in VISIBLE chain-of-thought.
-# Removing the "brief steps" instruction measurably collapses math/logic
-# accuracy — the CoT that costs completion tokens is also what carries
-# correctness there. Do not trim it.
+# Requests are plain OpenAI-compatible calls (no reasoning_effort), so
+# reasoning models may spend completion tokens thinking before the answer.
+# Caps leave room for that: a cap that truncates mid-thought yields an empty
+# or cut-off answer, which costs far more score than the extra tokens.
+# The "brief steps" instruction on math/logic is load-bearing — removing it
+# measurably collapses accuracy there. Do not trim it.
 _BASE = "Answer in English. Be concise and direct; no preamble, no restating the question."
 
 _CONFIG: dict[Category, tuple[str, int, str]] = {
     Category.FACTUAL: (
         f"{_BASE} Give a correct, clear answer in under 120 words.",
-        320, STRONG,
+        350, STRONG,
     ),
     Category.MATH: (
         f"{_BASE} Work through it in brief steps, then end with "
         f"'Answer: <value>' on its own line.",
-        400, STRONG,
+        450, STRONG,
     ),
     Category.SENTIMENT: (
         f"{_BASE} State the sentiment as positive, negative, or neutral, "
         f"then one short reason.",
-        120, CHEAP,
+        100, CHEAP,
     ),
     Category.SUMMARIZATION: (
         f"{_BASE} Output only the summary and obey any length or format "
         f"constraint stated in the task.",
-        240, CHEAP,
+        250, CHEAP,
     ),
     Category.NER: (
         f"{_BASE} List each entity as 'label: value', one per line, using "
         f"the labels person, organization, location, date.",
-        260, CHEAP,
+        250, CHEAP,
     ),
     Category.CODE_DEBUG: (
         f"{_BASE} State the bug in one sentence, then give the corrected "
         f"code in a single fenced block.",
-        520, CODE,
+        900, CODE,
     ),
     Category.CODE_GEN: (
         f"{_BASE} Output only the code in a single fenced block — correct, "
         f"complete, and self-contained.",
-        520, CODE,
+        900, CODE,
     ),
     Category.LOGIC: (
-        f"{_BASE} Reason in brief numbered steps, checking each constraint, "
-        f"then end with 'Answer: <value>' on its own line.",
-        460, STRONG,
+        f"{_BASE} Reason in at most five brief numbered steps, one short "
+        f"line each, then end with 'Answer: <value>' on its own line.",
+        700, STRONG,
     ),
 }
 
