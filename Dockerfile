@@ -2,15 +2,16 @@
 # platform explicitly. python:3.11 because llama-cpp-python 0.3.19 is the
 # newest version with a prebuilt cp311 linux_x86_64 CPU wheel on this index;
 # wheel-only install so a version bump can never silently trigger a source
-# build (which fails on the slim image without a toolchain).
-FROM python:3.11-slim
+# build (this image has no toolchain).
+#
+# Alpine, not Debian slim: the prebuilt wheel's libllama.so is linked against
+# musl libc (needs libc.musl-x86_64.so.1), so on any glibc base the import
+# fails at dlopen and the local tier silently dies — every task escalates to
+# the paid API. That is exactly what the graded 5,437-token run was.
+FROM python:3.11-alpine
 
-# libgomp1: the prebuilt llama-cpp-python CPU wheel links libgomp.so.1
-# (OpenMP), which slim images do not ship — without it the import fails and
-# the local tier silently dies (every task escalates to the paid API).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+# libstdc++/libgomp: C++ runtime and OpenMP for the wheel's native library.
+RUN apk add --no-cache curl ca-certificates libstdc++ libgomp
 
 RUN pip install --no-cache-dir \
     --only-binary=llama-cpp-python \
