@@ -1,11 +1,10 @@
 """Per-category answer strategy: classify, answer free if possible, else API.
 
-Classification is Gemma-first (a validated local one-word call, 0 scored
-tokens) with the regex classifier as fallback. Every category except logic
-is then attempted locally; only declined or validation-failed tasks pay for
-a Fireworks call. Each API category carries a terse system prompt, a token
-cap, and a model tier — prompts are deliberately short because input tokens
-count toward the score.
+The regex classifier picks the category (zero cost, zero model time), then
+every category except logic is attempted locally; only declined or
+validation-failed tasks pay for a Fireworks call. Each API category carries
+a terse system prompt, a token cap, and a model tier — prompts are
+deliberately short because input tokens count toward the score.
 """
 
 from __future__ import annotations
@@ -70,28 +69,19 @@ _CONFIG: dict[Category, tuple[str, int, str]] = {
 }
 
 
-def _classify(prompt: str) -> Category:
-    """Gemma classifies when available — a validated one-word local answer,
-    0 leaderboard tokens, and far more robust to keyword collisions than the
-    regex pass. The regex classifier is the fallback, not a second opinion."""
-    word = _LOCAL.classify(prompt)
-    if word is not None:
-        try:
-            return Category(word)
-        except ValueError:
-            pass
-    return classify(prompt)
-
-
 def solve(prompt: str) -> str:
-    category = _classify(prompt)
+    # Regex classification only. Gemma classification was tried (v8) and
+    # timed out the grading VM: one extra model call per task doubled the
+    # serialized local compute, and the regex routed every sample and
+    # practice task identically anyway. Local compute is spent exclusively
+    # on producing answers.
+    category = classify(prompt)
 
     # Free tier: provable arithmetic never touches the API. solve_math()
     # declines (returns None) on anything it cannot fully parse, so a wrong
-    # zero-token answer is structurally impossible. Consulting the regex
-    # classifier too means a Gemma misroute can never cost an arithmetic
-    # task its exact deterministic answer.
-    if category is Category.MATH or classify(prompt) is Category.MATH:
+    # zero-token answer is structurally impossible — word problems and
+    # unparseable phrasings fall through to the local/API paths below.
+    if category is Category.MATH:
         exact = solve_math(prompt)
         if exact is not None:
             return f"Answer: {exact}"

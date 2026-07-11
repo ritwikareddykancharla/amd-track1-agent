@@ -72,7 +72,12 @@ _PATTERNS: list[tuple[Category, list[str]]] = [
         r"the following (clues|facts|statements|conditions)",
         r"each (person|house|box|day|one) .*(different|exactly|only|one)",
         r"\bdeduce\b", r"logically (follows?|true)",
-        r"(definitely|necessarily) (true|follows)",
+        # Syllogisms and forced-choice reasoning ("if all bloops are razzies
+        # ... are all bloops definitely lazzies? Answer yes or no"). Logic
+        # is the one always-API category, so overmatching here costs a few
+        # tokens; undermatching ships an unvalidated local deduction.
+        r"\b(definitely|necessarily)\b", r"\bif all\b.* are\b",
+        r"\byes or no\b",
         r"knights? and knaves", r"truth[- ]?teller", r"\bliar\b",
     ]),
     (Category.MATH, [

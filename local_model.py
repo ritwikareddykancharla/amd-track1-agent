@@ -22,9 +22,9 @@ Logic never runs locally: the 4B model failed a three-line deduction in
 testing while sounding fully confident, and only re-doing the reasoning
 could catch that — so there is nothing to validate against.
 
-The same model also classifies tasks (a validated one-word answer); the
-regex classifier remains the fallback whenever the model is unavailable or
-answers off-menu.
+Classification stays with the regex pass in classifier.py: Gemma-based
+classification (v8) doubled serialized local compute and timed out the
+grading VM, while routing no differently on any tested task.
 """
 from __future__ import annotations
 
@@ -60,17 +60,6 @@ def set_deadline(monotonic_deadline: float) -> None:
 def _out_of_time() -> bool:
     return _deadline is not None and _deadline - time.monotonic() < _MIN_HEADROOM_S
 
-
-_CATEGORY_WORDS = {
-    "factual", "math", "sentiment", "summarization", "ner",
-    "code_debug", "code_gen", "logic",
-}
-
-_CLASSIFY = (
-    "Classify the task into exactly one category: factual, math, sentiment, "
-    "summarization, ner, code_debug, code_gen, or logic. Reply with only "
-    "the category word.\n\nTask:\n"
-)
 
 _PROMPTS = {
     "sentiment": (
@@ -164,6 +153,11 @@ class LocalModel:
     def _generate(self, content: str, max_tokens: int) -> str | None:
         try:
             with self._lock:  # llama.cpp context is not thread-safe
+                # Re-check AFTER acquiring: a task can queue behind the lock
+                # for minutes, and generating past the deadline is what turns
+                # a slow run into a killed container (the v8 TIMEOUT).
+                if _out_of_time():
+                    return None
                 llm = self._load()
                 result = llm.create_chat_completion(
                     # Gemma has no system role; instructions ride in the
@@ -177,19 +171,6 @@ class LocalModel:
             # Oversized prompt / transient failure: the caller escalates this
             # one task (load failures latch _failed in _load).
             return None
-
-    def classify(self, prompt: str) -> str | None:
-        """Validated one-word category, or None so the caller falls back to
-        the regex classifier. Never wrong-by-construction: an off-menu reply
-        is discarded, and a misroute into a validated category is caught by
-        that category's validator (worst case: one extra API call)."""
-        if not self.available or _out_of_time():
-            return None
-        text = self._generate(_CLASSIFY + prompt, max_tokens=6)
-        if not text:
-            return None
-        word = text.split()[0].strip(".,!:'\"`*").lower().replace("-", "_")
-        return word if word in _CATEGORY_WORDS else None
 
     def answer(self, category: str, prompt: str) -> str | None:
         """Local answer, validated where a validator exists, or None so the

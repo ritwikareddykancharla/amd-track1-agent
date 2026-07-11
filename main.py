@@ -121,4 +121,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    rc = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # Hard exit: worker threads can still be inside a llama.cpp generation,
+    # and a normal exit joins non-daemon threads — which is exactly how the
+    # v8 run outlived the harness's 10-minute kill and scored TIMEOUT.
+    # results.json is already written; nothing a lingering thread produces
+    # can be used, so take the exit now.
+    os._exit(rc)
