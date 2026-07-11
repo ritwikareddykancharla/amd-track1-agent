@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from agent import solve
 from llm import describe_tiers, usage
+from local_model import set_deadline
 
 INPUT_PATH = os.environ.get("INPUT_PATH", "/input/tasks.json")
 OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/output/results.json")
@@ -59,6 +60,7 @@ def run(tasks: list[dict]) -> list[dict]:
         return [_answer_one(t, i) for i, t in enumerate(tasks)]
 
     deadline = time.monotonic() + DEADLINE_S
+    set_deadline(deadline)  # local tier declines near the deadline (API is faster)
     pool = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(tasks)))
     futures = [pool.submit(_answer_one, t, i) for i, t in enumerate(tasks)]
 

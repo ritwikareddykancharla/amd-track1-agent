@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from classifier import Category, classify
 from llm import complete, model_for
+from local_model import LOCAL_CATEGORIES, LocalModel
+from solvers import solve_math
+
+_LOCAL = LocalModel()
 
 CHEAP, STRONG, CODE = "cheap", "strong", "code"
 
@@ -65,6 +69,25 @@ _CONFIG: dict[Category, tuple[str, int, str]] = {
 
 def solve(prompt: str) -> str:
     category = classify(prompt)
+
+    # Free tier: provable arithmetic never touches the API. solve_math()
+    # declines (returns None) on anything it cannot fully parse, so a wrong
+    # zero-token answer is structurally impossible — word problems and
+    # unparseable phrasings fall through to the API path below.
+    if category is Category.MATH:
+        exact = solve_math(prompt)
+        if exact is not None:
+            return f"Answer: {exact}"
+
+    # Free tier 2: local Gemma for categories whose output is validated
+    # before shipping (sentiment label check, NER source-text check, summary
+    # reduction check). A failed validation returns None and the task pays
+    # for an API call instead — never a gamble on the accuracy gate.
+    if category.value in LOCAL_CATEGORIES:
+        local = _LOCAL.answer(category.value, prompt)
+        if local is not None:
+            return local
+
     system, max_tokens, tier = _CONFIG[category]
     primary = model_for(tier)
     # Blank/failed answers retry on the opposite general tier.

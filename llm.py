@@ -87,7 +87,11 @@ def _select_tiers(models: list[str]) -> dict[str, str]:
     blank-answer fallback in complete() absorbs."""
     coders = [m for m in models if _CODE.search(m.lower())]
     general = [m for m in models if not _CODE.search(m.lower())] or models
-    strong = max(general, key=lambda m: (_total(m), not _QUANT.search(m.lower())))
+    # gpt-oss is a measured token burner (its reasoning cannot be fully
+    # suppressed: 354 vs 134 completion tokens on the identical code-gen
+    # task), so strong/code prefer any alternative when one exists.
+    non_oss = [m for m in general if "gpt-oss" not in m.lower()] or general
+    strong = max(non_oss, key=lambda m: (_total(m), not _QUANT.search(m.lower())))
     cheap = min(models, key=lambda m: (_active(m), not _QUANT.search(m.lower())))
     code = max(coders, key=_total) if coders else strong
     return {"cheap": cheap, "strong": strong, "code": code}
