@@ -196,11 +196,35 @@ class LocalModel:
         caller escalates to the API."""
         if not self.available or category not in LOCAL_CATEGORIES or _out_of_time():
             return None
+        if category in ("code_gen", "code_debug"):
+            return self._answer_code(category, prompt)
         text = self._generate(
             f"{_PROMPTS[category]}\n\n{prompt}", _MAX_TOKENS[category])
         if not text:
             return None
         return _validate(category, prompt, text)
+
+    def _answer_code(self, category: str, prompt: str) -> str | None:
+        """Generate, smoke-test, and — when the test names a concrete crash —
+        retry once with that error fed back. The retry is free (local tokens
+        don't score) and usually just adds the missing guard; a second
+        failure escalates to the API."""
+        text = self._generate(
+            f"{_PROMPTS[category]}\n\n{prompt}", _MAX_TOKENS[category])
+        if not text:
+            return None
+        answer, error = _check_code(text)
+        if answer is not None or not error or _out_of_time():
+            return answer
+        retry = self._generate(
+            f"{_PROMPTS[category]}\n\n{prompt}\n\nYour previous attempt:\n"
+            f"{text}\n\nIt failed testing: {error}\n"
+            f"Output only the corrected code.",
+            _MAX_TOKENS[category])
+        if not retry:
+            return None
+        answer, _ = _check_code(retry)
+        return answer
 
 
 def _validate(category: str, prompt: str, text: str) -> str | None:
@@ -217,8 +241,7 @@ def _validate(category: str, prompt: str, text: str) -> str | None:
         return _validate_factual(text)
     if category == "math":
         return text if _ANSWER_LINE.search(text) else None
-    if category in ("code_gen", "code_debug"):
-        return _validate_code(text)
+    # code_gen / code_debug are handled by LocalModel._answer_code.
     return None
 
 
@@ -285,16 +308,19 @@ def _validate_summary(prompt: str, text: str) -> str | None:
 # battery of generic single-argument calls must not raise. TypeError means
 # "sample doesn't apply to this function" (e.g. a string fed to fibonacci)
 # and is skipped; any other exception — IndexError on [], ZeroDivisionError,
-# an infinite loop killed by the timeout — fails the candidate.
+# an infinite loop killed by the timeout — fails the candidate, and the
+# concrete failing call is printed so the retry prompt can quote it.
 _SMOKE = """
 import inspect, sys
 ns = {}
 try:
     exec(compile(CODE, "<candidate>", "exec"), ns)
-except Exception:
+except Exception as e:
+    print(f"the code failed to run: {type(e).__name__}: {e}")
     sys.exit(2)
 funcs = [v for v in ns.values() if inspect.isfunction(v)]
 if not funcs:
+    print("no function was defined")
     sys.exit(3)
 samples = [([],), ([3, 1, 2],), ([5, 5, 3],), ([2],), (0,), (1,), (7,), ("",), ("abc",)]
 for fn in funcs:
@@ -311,33 +337,42 @@ for fn in funcs:
             fn(*args)
         except TypeError:
             pass
-        except Exception:
+        except Exception as e:
+            print(f"calling {fn.__name__}({args[0]!r}) raised {type(e).__name__}: {e}")
             sys.exit(4)
 sys.exit(0)
 """
 
 
-def _code_runs(code: str) -> bool:
+def _code_runs(code: str) -> tuple[bool, str]:
+    """(passed, error). The error string is the smoke test's description of
+    the first failing call — quotable in a retry prompt."""
     harness = f"CODE = {code!r}\n" + _SMOKE
     try:
         proc = subprocess.run(
             [sys.executable, "-c", harness],
-            capture_output=True, timeout=10,
+            capture_output=True, text=True, timeout=10,
         )
+    except subprocess.TimeoutExpired:
+        return False, "the code did not finish within 10 seconds (likely an infinite loop)"
     except Exception:
-        return False
-    return proc.returncode == 0
+        return False, ""
+    if proc.returncode == 0:
+        return True, ""
+    return False, (proc.stdout or "").strip().splitlines()[-1] if proc.stdout.strip() else ""
 
 
-def _validate_code(text: str) -> str | None:
+def _check_code(text: str) -> tuple[str | None, str]:
     """Execution is the validator: extract the code block, run it in a
     sandboxed subprocess, and ship only if it survives. Semantically wrong
     but crash-free code can still slip through — but every crash, syntax
-    error, and hang is caught for free."""
+    error, and hang is caught for free. Returns (shippable answer or None,
+    error description for the retry prompt)."""
     m = _CODE_BLOCK.search(text)
     code = (m.group(1) if m else text).strip()
     if "def " not in code:
-        return None
-    if not _code_runs(code):
-        return None
-    return text if m else f"```python\n{code}\n```"
+        return None, ""
+    ok, error = _code_runs(code)
+    if not ok:
+        return None, error
+    return (text if m else f"```python\n{code}\n```"), ""
